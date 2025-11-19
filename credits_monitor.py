@@ -12,8 +12,8 @@ import requests
 from pathlib import Path
 from datetime import datetime, timedelta
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QMessageBox, QGroupBox, QInputDialog, QTextEdit, QDialog, QDialogButtonBox
+    QApplication, QMainWindow, QWidget, QVBoxLayout,
+    QLabel, QProgressBar
 )
 from PySide6.QtCore import QTimer, Qt, QUrl, Slot
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -29,8 +29,6 @@ class CreditsMonitor(QMainWindow):
         self.login_url = "https://app.augmentcode.com/account/subscription"
         self.data_refresh_interval = 60000  # 60 seconds - API call frequency
         self.cookie_refresh_interval = 50 * 60 * 1000  # 50 minutes - cookie refresh
-        self.countdown_seconds = 60
-        self.cookie_countdown_seconds = 50 * 60
 
         # Cookie storage file
         self.cookie_file = Path.home() / ".augment_credits_cookies.json"
@@ -39,8 +37,7 @@ class CreditsMonitor(QMainWindow):
         self.cookies = {}
         self.cookie_expiry = None
 
-        # Browser (hidden by default)
-        self.browser_widget = None
+        # Browser (background only)
         self.web_view = None
         self.web_page = None
 
@@ -62,13 +59,12 @@ class CreditsMonitor(QMainWindow):
         main_layout.setContentsMargins(10, 8, 10, 8)
 
         # Percentage (large and prominent)
-        self.percentage_label = QLabel("--.-%)")
+        self.percentage_label = QLabel("--.-%")
         self.percentage_label.setStyleSheet("font-size: 20px; font-weight: bold;")
         self.percentage_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.percentage_label)
 
         # Progress bar (thinner)
-        from PySide6.QtWidgets import QProgressBar
         self.progress_bar = QProgressBar()
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(1000)  # Use 1000 for decimal precision
@@ -84,30 +80,8 @@ class CreditsMonitor(QMainWindow):
         main_layout.addWidget(self.credits_label)
 
     def setup_browser(self):
-        """Setup the hidden browser for cookie management."""
-        self.browser_widget = QWidget()
-        layout = QVBoxLayout(self.browser_widget)
-
-        # Browser controls
-        controls_layout = QHBoxLayout()
-
-        url_label = QLabel(f"🌐 {self.login_url}")
-        url_label.setStyleSheet("font-weight: bold; padding: 5px;")
-        controls_layout.addWidget(url_label)
-
-        controls_layout.addStretch()
-
-        reload_btn = QPushButton("🔄 Reload")
-        reload_btn.clicked.connect(self.reload_browser)
-        controls_layout.addWidget(reload_btn)
-
-        hide_btn = QPushButton("✓ Done (Hide Browser)")
-        hide_btn.clicked.connect(self.hide_browser)
-        controls_layout.addWidget(hide_btn)
-
-        layout.addLayout(controls_layout)
-
-        # Web view
+        """Setup the hidden browser for background cookie refresh."""
+        # Create minimal browser for background cookie refresh only
         self.web_view = QWebEngineView()
         self.web_page = QWebEnginePage(QWebEngineProfile.defaultProfile(), self.web_view)
         self.web_view.setPage(self.web_page)
@@ -116,25 +90,22 @@ class CreditsMonitor(QMainWindow):
         cookie_store = self.web_page.profile().cookieStore()
         cookie_store.cookieAdded.connect(self.on_cookie_added)
 
-        layout.addWidget(self.web_view)
+        # Load existing cookies into browser
+        self.load_cookies_into_browser()
 
-        # Info label
-        info_label = QLabel(
-            "💡 Login to Augment Code above. Click 'Done' when finished. "
-            "The app will automatically refresh cookies every 50 minutes."
-        )
-        info_label.setWordWrap(True)
-        info_label.setStyleSheet(
-            "padding: 10px; border: 1px solid palette(mid); "
-            "border-radius: 5px;"
-        )
-        layout.addWidget(info_label)
+    def load_cookies_into_browser(self):
+        """Load saved cookies into the browser."""
+        if not self.cookies:
+            return
 
-        self.browser_widget.setWindowTitle("Augment Code Login")
-        self.browser_widget.resize(1000, 700)
+        from PySide6.QtNetwork import QNetworkCookie
+        cookie_store = self.web_page.profile().cookieStore()
 
-
-
+        for name, value in self.cookies.items():
+            cookie = QNetworkCookie(name.encode(), value.encode())
+            cookie.setDomain(".augmentcode.com")
+            cookie.setPath("/")
+            cookie_store.setCookie(cookie, QUrl("https://app.augmentcode.com"))
 
     def load_cookies_from_file(self):
         """Load cookies from file, or use initial cookies if file doesn't exist."""
@@ -156,18 +127,12 @@ class CreditsMonitor(QMainWindow):
                             print(f"Loaded cookies from file (age: {age_minutes:.1f} min)")
                             return
                         else:
-                            print(f"Cookies too old ({age_minutes:.1f} min), using initial cookies")
+                            print(f"Cookies too old ({age_minutes:.1f} min), need fresh login")
 
-            # Fallback to initial cookies
-            initial_cookies = {
-                'ph_phc_TXdpocbGVeZVm5VJmAsHTMrCofBQu3e0kN8HGMNGTVW_posthog': '%7B%22distinct_id%22%3A%22019726d0-7c6c-76c5-831b-8a62820cac48%22%2C%22%24sesid%22%3A%5B1757501448384%2C%220199333f-e0a1-7afe-8bce-3f2ad90ba5a2%22%2C1757501448353%5D%7D',
-                'ajs_user_id': 'fcacaa74-0118-496f-8432-5a2b74d79dfc',
-                '_session': 'eyJvYXV0aDI6c3RhdGUiOiJpU1NiQm1RWFZpdHZZQmhHQWhEdklXaFRVdmRTMjZESjZrRmZuY1JFQlBRIiwib2F1dGgyOmNvZGVWZXJpZmllciI6IlBvbzdhQzVsQ2FQX1JxdktZTnVZU051cFR1eXI5eEtnZmR3anlQbDBUeFkiLCJ1c2VyIjp7InVzZXJJZCI6ImZjYWNhYTc0LTAxMTgtNDk2Zi04NDMyLTVhMmI3NGQ3OWRmYyIsInRlbmFudElkIjoiNGRkZDgzYWVlODdiNzZlNGE3M2JmODNlZWQ3MzBmMmYiLCJ0ZW5hbnROYW1lIjoiZDExLWRpc2NvdmVyeTYiLCJzaGFyZE5hbWVzcGFjZSI6ImQxMSIsImVtYWlsIjoiQmluZ293QG91dGxvb2suY29tIiwicm9sZXMiOltdLCJjcmVhdGVkQXQiOjE3NjM1NTcxMDIzNzQsInNlc3Npb25JZCI6ImI2NzM0OGY4LWMwYTItNGUzOS04MTlhLThlNDMwOTg4YjYxZSJ9fQ%3D%3D.m5khOjUrFY%2Fxb0Isz9X59NJH1irkJefTiO5mkFWCAPU',
-                'web_rpc_proxy_session': 'MTc2MzU1NzE5NHxYelNuOWdha1p4WHpnNFc4RTd3VngzZ3ZqVlhXNHVKdXlrbzJoOUJCOEVzdXB0ZTNsMFZMMHVCREtuWXpKS2RLdWlGb0MxUWVKZHRlaFFxSUNqcW42NVlyWFNjaEcxNVpqTVZEamZUVUZnT3NuM3RoMnJVMmdhcklsTnVGVFhpcEE3T3pFbnEzOXRXTUY4V1MzQU84Vy1ubGJvdzBpeFRNczNoX3JNT3lQLTBJNzdPS2xJX3NvNmRxZDhCYzNzUWR0WTg5REtzWkRNV2k0RVVaSWh5MzN5dWpQc1NSLXhVPXy-cqQUoQTWtiJ-sqRJbLHizLsA0RrY_s2sUtGPgIwkxA=='
-            }
-            self.cookies.update(initial_cookies)
-            self.cookie_expiry = datetime.now() + timedelta(hours=1)
-            print("Using initial cookies")
+            # No valid cookies found - need to login
+            print("No saved cookies found. Please login via browser.")
+            self.show_error_state()
+            # Browser will auto-open on first API call failure
 
         except Exception as e:
             print(f"Error loading cookies: {e}")
@@ -187,7 +152,7 @@ class CreditsMonitor(QMainWindow):
             print(f"Error saving cookies: {e}")
 
     def setup_timers(self):
-        """Setup timers for auto-refresh and countdown."""
+        """Setup timers for auto-refresh."""
         # Data refresh timer (every minute)
         self.data_refresh_timer = QTimer()
         self.data_refresh_timer.timeout.connect(self.fetch_credits)
@@ -198,12 +163,7 @@ class CreditsMonitor(QMainWindow):
         self.cookie_refresh_timer.timeout.connect(self.refresh_cookies)
         self.cookie_refresh_timer.start(self.cookie_refresh_interval)
 
-        # Countdown timer (updates every second)
-        self.countdown_timer = QTimer()
-        self.countdown_timer.timeout.connect(self.update_countdown)
-        self.countdown_timer.start(1000)
-
-        # Initial fetch after 3 seconds (give time for cookies to load)
+        # Initial fetch after 3 seconds (try existing cookies first)
         QTimer.singleShot(3000, self.fetch_credits)
 
     @Slot()
@@ -211,6 +171,23 @@ class CreditsMonitor(QMainWindow):
         """Handle cookie added event."""
         cookie_name = cookie.name().data().decode()
         cookie_value = cookie.value().data().decode()
+
+        # Don't overwrite _session cookie if it already has user info
+        if cookie_name == '_session' and '_session' in self.cookies:
+            # Check if existing cookie has user info
+            import base64
+            from urllib.parse import unquote
+            try:
+                existing_decoded = unquote(self.cookies['_session'])
+                if '.' in existing_decoded:
+                    payload = existing_decoded.split('.')[0]
+                    decoded_payload = base64.b64decode(payload + '==').decode('utf-8', errors='ignore')
+                    if 'userId' in decoded_payload:
+                        # Existing cookie has user info, don't overwrite
+                        return
+            except:
+                pass
+
         self.cookies[cookie_name] = cookie_value
 
         # Update cookie status and save
@@ -219,108 +196,15 @@ class CreditsMonitor(QMainWindow):
             # Save cookies immediately when updated
             self.save_cookies_to_file()
 
-    @Slot()
-    def show_browser(self):
-        """Show the browser window for login."""
-        if not self.browser_widget:
-            self.setup_browser()
 
-        self.web_view.setUrl(QUrl(self.login_url))
-        self.browser_widget.show()
 
-    @Slot()
-    def hide_browser(self):
-        """Hide the browser window."""
-        if self.browser_widget:
-            self.browser_widget.hide()
 
-    @Slot()
-    def reload_browser(self):
-        """Reload the browser page."""
-        if self.web_view:
-            self.web_view.reload()
-
-    @Slot()
-    def import_cookies_dialog(self):
-        """Show dialog to import cookies from clipboard."""
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Import Cookies")
-        dialog.setMinimumWidth(600)
-        dialog.setMinimumHeight(400)
-
-        layout = QVBoxLayout(dialog)
-
-        # Instructions
-        instructions = QLabel(
-            "<b>Paste your cookies here:</b><br>"
-            "Format: name1=value1; name2=value2; ...<br>"
-            "Or one cookie per line: name=value"
-        )
-        layout.addWidget(instructions)
-
-        # Text edit for cookies
-        text_edit = QTextEdit()
-        text_edit.setPlaceholderText(
-            "Example:\n"
-            "_session=abc123; web_rpc_proxy_session=xyz789\n\n"
-            "Or:\n"
-            "_session=abc123\n"
-            "web_rpc_proxy_session=xyz789"
-        )
-        layout.addWidget(text_edit)
-
-        # Buttons
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        layout.addWidget(button_box)
-
-        if dialog.exec() == QDialog.Accepted:
-            cookie_text = text_edit.toPlainText().strip()
-            if cookie_text:
-                self.parse_and_load_cookies(cookie_text)
-
-    def parse_and_load_cookies(self, cookie_text):
-        """Parse cookie text and load into storage."""
-        try:
-            new_cookies = {}
-
-            # Try parsing as semicolon-separated (browser format)
-            if ';' in cookie_text:
-                pairs = cookie_text.split(';')
-                for pair in pairs:
-                    pair = pair.strip()
-                    if '=' in pair:
-                        name, value = pair.split('=', 1)
-                        new_cookies[name.strip()] = value.strip()
-            else:
-                # Try parsing as line-separated
-                lines = cookie_text.split('\n')
-                for line in lines:
-                    line = line.strip()
-                    if '=' in line:
-                        name, value = line.split('=', 1)
-                        new_cookies[name.strip()] = value.strip()
-
-            if new_cookies:
-                self.cookies.update(new_cookies)
-                self.cookie_expiry = datetime.now() + timedelta(hours=1)
-                # Save imported cookies
-                self.save_cookies_to_file()
-                QTimer.singleShot(1000, self.fetch_credits)
-            else:
-                raise ValueError("No valid cookies")
-
-        except Exception as e:
-            self.show_error_state()
-            print(f"Import error: {e}")
 
     @Slot()
     def refresh_cookies(self):
         """Automatically refresh cookies by reloading the page in background."""
         if self.web_view:
             self.web_view.setUrl(QUrl(self.login_url))
-            self.cookie_countdown_seconds = 50 * 60
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Auto-refreshing cookies...")
             # Cookies will be saved automatically via on_cookie_added callback
 
@@ -347,15 +231,13 @@ class CreditsMonitor(QMainWindow):
                 self.handle_credits_response(data)
             elif response.status_code == 401 or response.status_code == 403:
                 self.show_error_state()
-                self.show_browser()
+                print("Cookie expired. Please check saved cookies file.")
             else:
                 raise Exception(f"HTTP {response.status_code}")
 
         except Exception as e:
             self.show_error_state()
             print(f"Error: {e}")
-
-        self.countdown_seconds = 60
 
     def handle_credits_response(self, data):
         """Handle the response from credits API (called after successful fetch)."""
@@ -395,16 +277,7 @@ class CreditsMonitor(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setStyleSheet("QProgressBar { height: 14px; } QProgressBar::chunk { background-color: #f44336; }")
 
-    @Slot()
-    def update_countdown(self):
-        """Update the countdown timer display."""
-        self.countdown_seconds -= 1
-        if self.countdown_seconds < 0:
-            self.countdown_seconds = 60
 
-        self.cookie_countdown_seconds -= 1
-        if self.cookie_countdown_seconds < 0:
-            self.cookie_countdown_seconds = 50 * 60
 
 
 def main():
